@@ -1,0 +1,26 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "superguard"
+version = "8.0.0"
+displayName = "SuperGuard Ultimate Suite v8"
+authors = "Admin"
+description = '''
+100% Server-side total security suite: Gorgeous Stained Glass UI Dashboard with explicit Nicknames, Inventory Viewer, Auto-Auth, Secure Admin /admin, Advanced Vanish, Chat Guard, Anti-Dupe, Anti-XRay, and Lag Shield.
+'''
+
+[[dependencies.superguard]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1,)"
+ordering = "NONE"
+side = "SERVER"
+
+[[dependencies.superguard]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1]"
+ordering = "NONE"
+side = "SERVER"
