@@ -9,7 +9,7 @@ import net.minecraft.world.effect.MobEffects;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.CommandEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
-import net.neoforged.neoforge.event.entity.living.LivingEvent;
+import net.neoforged.neoforge.event.tick.PlayerTickEvent;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -91,7 +91,7 @@ public class CommandHandler {
 
     // Заморозка движения и черный экран для неавторизованных / неразрешенных админов
     @SubscribeEvent
-    public void onPlayerTick(LivingEvent.LivingTickEvent event) {
+    public void onPlayerTick(PlayerTickEvent.Post event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             String name = player.getName().getString().toLowerCase();
 
