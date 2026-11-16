@@ -1,23 +1,25 @@
 package com.example.superguard;
 
 import com.mojang.brigadier.arguments.StringArgumentType;
-import net.minecraft.ChatFormatting;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.event.CommandEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import net.neoforged.neoforge.event.entity.living.LivingEvent;
 
 import java.io.File;
-import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.json.simple.JSONObject;
-import org.json.simple.parser.JSONParser;
 
 public class CommandHandler {
 
@@ -27,8 +29,8 @@ public class CommandHandler {
     private static final Set<String> vanishedPlayers = new HashSet<>();
     private static String adminPassword = null;
 
-    private static final File AUTH_FILE = new File("config/superguard_auth.json");
-    private static final File ADMIN_FILE = new File("config/superguard_admin.json");
+    private static final File AUTH_FILE = new File("config/superguard_auth.txt");
+    private static final File ADMIN_FILE = new File("config/superguard_admin.txt");
 
     static {
         loadData();
@@ -49,16 +51,19 @@ public class CommandHandler {
     private static void loadData() {
         try {
             if (AUTH_FILE.exists()) {
-                JSONParser parser = new JSONParser();
-                JSONObject obj = (JSONObject) parser.parse(new FileReader(AUTH_FILE));
-                for (Object key : obj.keySet()) {
-                    registeredUsers.put((String) key, (String) obj.get(key));
+                List<String> lines = Files.readAllLines(AUTH_FILE.toPath());
+                for (String line : lines) {
+                    String[] parts = line.split(":", 2);
+                    if (parts.length == 2) {
+                        registeredUsers.put(parts[0].trim(), parts[1].trim());
+                    }
                 }
             }
             if (ADMIN_FILE.exists()) {
-                JSONParser parser = new JSONParser();
-                JSONObject obj = (JSONObject) parser.parse(new FileReader(ADMIN_FILE));
-                adminPassword = (String) obj.get("password");
+                List<String> lines = Files.readAllLines(ADMIN_FILE.toPath());
+                if (!lines.isEmpty()) {
+                    adminPassword = lines.get(0).trim();
+                }
             }
         } catch (Exception e) {
             SuperGuardMod.LOGGER.error("Failed to load SuperGuard auth data", e);
@@ -68,21 +73,71 @@ public class CommandHandler {
     private static void saveData() {
         try {
             AUTH_FILE.getParentFile().mkdirs();
-            JSONObject authObj = new JSONObject();
-            authObj.putAll(registeredUsers);
             try (FileWriter writer = new FileWriter(AUTH_FILE)) {
-                writer.write(authObj.toJSONString());
+                for (Map.Entry<String, String> entry : registeredUsers.entrySet()) {
+                    writer.write(entry.getKey() + ":" + entry.getValue() + "\n");
+                }
             }
 
-            JSONObject adminObj = new JSONObject();
             if (adminPassword != null) {
-                adminObj.put("password", adminPassword);
-            }
-            try (FileWriter writer = new FileWriter(ADMIN_FILE)) {
-                writer.write(adminObj.toJSONString());
+                try (FileWriter writer = new FileWriter(ADMIN_FILE)) {
+                    writer.write(adminPassword + "\n");
+                }
             }
         } catch (IOException e) {
             SuperGuardMod.LOGGER.error("Failed to save SuperGuard auth data", e);
+        }
+    }
+
+    // Заморозка движения и черный экран для неавторизованных / неразрешенных админов
+    @SubscribeEvent
+    public void onPlayerTick(LivingEvent.LivingTickEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            String name = player.getName().getString().toLowerCase();
+
+            boolean needsAuth = SuperGuardConfig.ENABLE_AUTH.get() && !isAuthenticated(name);
+            boolean isOp = player.getServer() != null && player.getServer().getPlayerList().isOp(player.getGameProfile());
+            boolean needsAdmin = isOp && !isSuperAdmin(name);
+
+            if (needsAuth || needsAdmin) {
+                // Полная остановка движения (обнуляем скорость по X и Z)
+                player.setDeltaMovement(0, player.getDeltaMovement().y, 0);
+
+                // Черный экран (Слепота) + Замедление + Запрет прыжков
+                player.addEffect(new MobEffectInstance(MobEffects.BLINDNESS, 40, 0, false, false));
+                player.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, 40, 255, false, false));
+                player.addEffect(new MobEffectInstance(MobEffects.JUMP, 40, 128, false, false));
+            }
+        }
+    }
+
+    // Перехват и блокировка команд
+    @SubscribeEvent
+    public void onCommand(CommandEvent event) {
+        if (event.getParseResults().getContext().getSource().getPlayer() == null) {
+            return;
+        }
+        ServerPlayer player = event.getParseResults().getContext().getSource().getPlayer();
+        String name = player.getName().getString().toLowerCase();
+        String commandLine = event.getParseResults().getReader().getString().toLowerCase().trim();
+
+        if (!isAuthenticated(name)) {
+            if (!commandLine.startsWith("register") && !commandLine.startsWith("login")) {
+                event.setCanceled(true);
+                player.sendSystemMessage(Component.literal("§c[Auth] Вы не вошли в систему! Используйте /login <пароль>"));
+                return;
+            }
+        }
+
+        boolean isOp = player.getServer() != null && player.getServer().getPlayerList().isOp(player.getGameProfile());
+        if (isOp && !isSuperAdmin(name)) {
+            String cmdRoot = commandLine.split(" ")[0];
+            List<String> restrictedCmds = List.of("ven", "sc", "sg", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip", "kick", "stop", "reload", "whitelist", "gamemode", "give", "clear");
+            
+            if (restrictedCmds.contains(cmdRoot)) {
+                event.setCanceled(true);
+                player.sendSystemMessage(Component.literal("§c[SuperGuard] Ваши OP-права заблокированы! Введите /admin <пароль> для разблокировки."));
+            }
         }
     }
 
@@ -148,18 +203,19 @@ public class CommandHandler {
                 .executes(context -> {
                     ServerPlayer player = context.getSource().getPlayerOrException();
                     String pass = StringArgumentType.getString(context, "password");
+                    String name = player.getName().getString().toLowerCase();
 
                     if (adminPassword == null) {
                         adminPassword = pass;
                         saveData();
-                        superAdmins.add(player.getName().getString().toLowerCase());
+                        superAdmins.add(name);
                         player.sendSystemMessage(Component.literal("§a[SuperGuard] Пароль администратора успешно создан и активирован!"));
                         return 1;
                     }
 
                     if (adminPassword.equals(pass)) {
-                        superAdmins.add(player.getName().getString().toLowerCase());
-                        player.sendSystemMessage(Component.literal("§a§l[SuperGuard] Режим Super Admin активирован! Полные права OP предоставлены."));
+                        superAdmins.add(name);
+                        player.sendSystemMessage(Component.literal("§a§l[SuperGuard] Режим Super Admin активирован! OP-команды разблокированы."));
                     } else {
                         player.sendSystemMessage(Component.literal("§c[SuperGuard] Неверный пароль администратора!"));
                     }
@@ -173,22 +229,22 @@ public class CommandHandler {
                     ServerPlayer player = context.getSource().getPlayerOrException();
                     String name = player.getName().getString().toLowerCase();
 
-                    if (!player.hasPermissions(2) && !isSuperAdmin(name)) {
-                        player.sendSystemMessage(Component.literal("§cУ вас нет прав для использования vanish."));
+                    if (!isSuperAdmin(name)) {
+                        player.sendSystemMessage(Component.literal("§cУ вас нет прав (введите /admin)."));
                         return 1;
                     }
 
                     if (vanishedPlayers.contains(name)) {
                         vanishedPlayers.remove(name);
                         player.setInvisible(false);
-                        player.sendSystemMessage(Component.literal("§aVanish выключен. Вы снова видимы."));
+                        player.sendSystemMessage(Component.literal("§aVanish выключен."));
                         if (player.getServer() != null) {
                             player.getServer().getPlayerList().broadcastSystemMessage(Component.literal("§e" + player.getName().getString() + " присоединился к игре."), false);
                         }
                     } else {
                         vanishedPlayers.add(name);
                         player.setInvisible(true);
-                        player.sendSystemMessage(Component.literal("§aVanish включен. Вы полностью невидимы и скрыты в табе."));
+                        player.sendSystemMessage(Component.literal("§aVanish включен."));
                         if (player.getServer() != null) {
                             player.getServer().getPlayerList().broadcastSystemMessage(Component.literal("§e" + player.getName().getString() + " вышел с сервера"), false);
                         }
@@ -203,7 +259,7 @@ public class CommandHandler {
                 .executes(context -> {
                     ServerPlayer player = context.getSource().getPlayerOrException();
                     String name = player.getName().getString().toLowerCase();
-                    if (!player.hasPermissions(2) && !isSuperAdmin(name)) {
+                    if (!isSuperAdmin(name)) {
                         player.sendSystemMessage(Component.literal("§cТолько для администраторов."));
                         return 1;
                     }
@@ -211,7 +267,7 @@ public class CommandHandler {
                     Component chatMsg = Component.literal("§d§l[StaffChat] §f" + player.getName().getString() + " ➔ " + msg);
                     if (player.getServer() != null) {
                         for (ServerPlayer p : player.getServer().getPlayerList().getPlayers()) {
-                            if (p.hasPermissions(2) || isSuperAdmin(p.getName().getString().toLowerCase())) {
+                            if (isSuperAdmin(p.getName().getString().toLowerCase())) {
                                 p.sendSystemMessage(chatMsg);
                             }
                         }
@@ -225,7 +281,7 @@ public class CommandHandler {
                 .executes(context -> {
                     ServerPlayer player = context.getSource().getPlayerOrException();
                     String name = player.getName().getString().toLowerCase();
-                    if (!player.hasPermissions(2) && !isSuperAdmin(name)) {
+                    if (!isSuperAdmin(name)) {
                         player.sendSystemMessage(Component.literal("§cТолько для администраторов."));
                         return 1;
                     }
